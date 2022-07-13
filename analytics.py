@@ -1,30 +1,81 @@
 # -*- coding: utf-8 -*-
 
+import os
 import csv
+import matplotlib.pyplot as plt
 
-viewers = "viewers_2022-06.csv"
-pageviews = "page_views_2022-06.csv"
+file_folder = "files"
 
+viewers = "files/viewers_2022-06.csv"
+pageviews = "files/page_views_2022-06.csv"
+
+class AnnualData():
+	def __init__(self, start_year=None, start_month=None, irn_map=None):
+		self.start_year = start_year
+		self.start_month = start_month
+		self.irn_map = irn_map
+		self.files = os.listdir(file_folder)
+		self.loaded_files = 0
+
+		self.bucket = UrlBucket()
+
+	def year_of_data(self):
+		year = int(self.start_year)
+		month = int(self.start_month)
+
+		while self.loaded_files < 12:
+			if month == 13:
+				month = 1
+				year += 1
+			else: pass
+			
+			self.load_file(year, month)
+
+			month += 1
+			self.loaded_files += 1
+
+		return self.bucket
+
+	def load_file(self, year, month):
+		s_year = str(year)
+		s_month = str(month)
+		if len(s_month) == 1:
+			s_month = "0{}".format(s_month)
+		file_suffix = "{year}-{month}.csv".format(year=s_year, month=s_month)
+		for file in self.files:
+			if file.endswith(file_suffix) and file.startswith("page"):
+				load_up = MonthlyData(year, month, self.irn_map)
+				load_up.combine_pageviews()
+			
 class MonthlyData():
-	def __init__(self, viewers, pageviews):
-		self.viewers = viewers
-		self.pageviews = pageviews
+	def __init__(self, year=None, month=None, irn_map=None, bucket=None):
+		self.year = year
+		self.month = month
+		self.irn_map = irn_map
+		self.bucket = bucket
 		self.viewers_data = []
 		self.pageviews_data = []
 		self.view_row_count = 0
 		self.page_row_count = 0
 
-		self.bucket = UrlBucket()
+		if self.bucket == None:
+			self.bucket = UrlBucket()
 
 	def open_viewers(self):
-		with open(self.viewers, newline='') as viewers_source:
+		viewers = file_folder + "/viewers_" + year + "-" + month + ".csv"
+		with open(viewers, newline='') as viewers_source:
 			view_reader = csv.DictReader(viewers_source, delimiter=",")
 			for row in view_reader:
 				self.viewers_data.append(row)
 				self.view_row_count += 1
 
 	def open_pageviews(self):
-		with open(self.pageviews, newline='') as pageviews_source:
+		s_year = str(self.year)
+		s_month = str(self.month)
+		if len(s_month) == 1:
+			s_month = "0{}".format(s_month)
+		pageviews = file_folder + "/page_views_" + s_year + "-" + s_month + ".csv"
+		with open(pageviews, newline='') as pageviews_source:
 			page_reader = csv.DictReader(pageviews_source, delimiter=",")
 			for row in page_reader:
 				self.pageviews_data.append(row)
@@ -50,14 +101,21 @@ class MonthlyData():
 		self.open_pageviews()
 		for row in self.pageviews_data:
 			url = row["URL"]
+			irn = self.map_irn(url)
 
-			url_check = self.bucket.find_in_bucket(url)
+			url_check = self.bucket.find_in_bucket(url, self.year, self.month)
 			
 			if url_check == False:
-				url_obj = UrlData(url=url, row_data=row)
+				url_obj = UrlData(url=url, row_data=row, year=self.year, month=self.month, irn=irn)
 				self.bucket.put_in_bucket(url_obj)
 			else:
 				url_check.update_url(add_row=row)
+
+	def map_irn(self, url):
+		for i in self.irn_map:
+			if url == i["WebAssociationAddress"]:
+				irn = i["irn"]
+				return irn
 
 class UrlBucket():
 	def __init__(self):
@@ -67,9 +125,9 @@ class UrlBucket():
 		self.bucket.append(urlobject)
 		return True
 
-	def find_in_bucket(self, url):
+	def find_in_bucket(self, url, year, month):
 		for crab in self.bucket:
-			if url == crab.url:
+			if url == crab.url and year == crab.year and month == crab.month:
 				return crab
 		return False
 
@@ -133,9 +191,13 @@ class ViewMonthlyData():
 '''
 
 class UrlData():
-	def __init__(self, url=None, row_data=None):
+	# Need to update this, possibly with a subclass that holds each month's data
+	def __init__(self, url=None, row_data=None, year=None, month=None, irn=None):
 		self.url = url
 		self.row_data = row_data
+		self.year = year
+		self.month = month
+		self.irn = irn
 		self.title = None
 		self.countries = []
 		self.views = 0
@@ -257,26 +319,60 @@ class UrlData():
 
 		self.times = summed_times/country_count
 
-def top_views(crabs, cutoff):
-	sorted_crabs = sorted(crabs, key=lambda x: x.views, reverse=True)
-	loop = 0
-	while loop < cutoff:
-		this_crab = sorted_crabs[loop]
-		print(this_crab.title, this_crab.views, this_crab.times)
-		loop += 1
+class DisplayCharts():
+	def __init__(self, bucket=None):
+		self.bucket = bucket
+		self.crabs = self.bucket.munch_bucket()
 
-july_2022 = MonthlyData(viewers, pageviews)
+	def top_views(self, cutoff):
+		sorted_crabs = sorted(self.crabs, key=lambda x: x.views, reverse=True)
+		loop = 0
+		while loop < cutoff:
+			this_crab = sorted_crabs[loop]
+			print(this_crab.month, this_crab.year, this_crab.title, this_crab.views, this_crab.times)
+			loop += 1
 
-july_views = july_2022.combine_viewers()
-july_pages = july_2022.combine_pageviews()
+	def display_year(self):
+		date_views = {}
+		date_axis = []
+		view_axis = []
+		for crab in self.crabs:
+			print(crab.title)
+			crab_views = 0
+			crab_date = str(crab.year) + "_" + str(crab.month)
+			if crab_date in date_views:
+				crab_views = date_views[crab_date] + crab.views
+			else:
+				crab_views = crab.views
+			date_views.update({crab_date: crab_views})
+		for date in date_views.keys():
+			date_axis.append(date)
+			view_axis.append(date_views[date])
+		pos = list(range(12))
+		print(date_views)
+#		self.bar_chart(view_axis, date_axis, pos)
 
-crabs = july_2022.bucket.munch_bucket()
-top_views(crabs, 10)
+	def bar_chart(self, numbers, labels, pos):
+		plt.bar(pos, numbers, color="blue")
+		plt.xticks(ticks=pos, labels=labels)
+		plt.show()
 
+def attach_irns():
+	irn_map = []
+	with open("Data.csv", newline="") as f:
+		f_reader = csv.DictReader(f, delimiter=",")
+		for row in f_reader:
+			irn_map.append(row)
+	return irn_map
 
-#for crab in crabs:
-#	print(crab.title, crab.views, crab.times)
+year = "2021"
+month = "07"
 
-#show_july = ViewMonthlyData(dataset=july_pages)
-#show_july.parse_dataset()
-#show_july.print_month()
+irn_map = attach_irns()
+
+year_data = AnnualData(start_year=year, start_month=month, irn_map=irn_map)
+year_data.year_of_data()
+
+display_year = DisplayCharts(year_data.bucket)
+
+display_year.display_year()
