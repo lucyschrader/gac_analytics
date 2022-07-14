@@ -4,17 +4,19 @@ import os
 import csv
 import matplotlib.pyplot as plt
 
-file_folder = "files"
+view_dir = "files/viewers"
+page_dir = "files/page_views"
 
-viewers = "files/viewers_2022-06.csv"
-pageviews = "files/page_views_2022-06.csv"
+viewers = "files/viewers/viewers_2022-06.csv"
+pageviews = "files/page_views/page_views_2022-06.csv"
 
 class AnnualData():
 	def __init__(self, start_year=None, start_month=None, irn_map=None):
 		self.start_year = start_year
 		self.start_month = start_month
 		self.irn_map = irn_map
-		self.files = os.listdir(file_folder)
+		self.p_files = os.listdir(page_dir)
+		self.v_files = os.listdir(view_dir)
 		self.loaded_files = 0
 
 		self.bucket = UrlBucket()
@@ -42,9 +44,9 @@ class AnnualData():
 		if len(s_month) == 1:
 			s_month = "0{}".format(s_month)
 		file_suffix = "{year}-{month}.csv".format(year=s_year, month=s_month)
-		for file in self.files:
-			if file.endswith(file_suffix) and file.startswith("page"):
-				load_up = MonthlyData(year, month, self.irn_map)
+		for file in self.p_files:
+			if file.endswith(file_suffix):
+				load_up = MonthlyData(year, month, self.irn_map, bucket=self.bucket)
 				load_up.combine_pageviews()
 			
 class MonthlyData():
@@ -62,7 +64,7 @@ class MonthlyData():
 			self.bucket = UrlBucket()
 
 	def open_viewers(self):
-		viewers = file_folder + "/viewers_" + year + "-" + month + ".csv"
+		viewers = view_dir + "/viewers_" + year + "-" + month + ".csv"
 		with open(viewers, newline='') as viewers_source:
 			view_reader = csv.DictReader(viewers_source, delimiter=",")
 			for row in view_reader:
@@ -74,7 +76,7 @@ class MonthlyData():
 		s_month = str(self.month)
 		if len(s_month) == 1:
 			s_month = "0{}".format(s_month)
-		pageviews = file_folder + "/page_views_" + s_year + "-" + s_month + ".csv"
+		pageviews = page_dir + "/page_views_" + s_year + "-" + s_month + ".csv"
 		with open(pageviews, newline='') as pageviews_source:
 			page_reader = csv.DictReader(pageviews_source, delimiter=",")
 			for row in page_reader:
@@ -97,19 +99,22 @@ class MonthlyData():
 		return viewers_dict
 
 	def combine_pageviews(self):
-		pageviews_dict = {}
 		self.open_pageviews()
 		for row in self.pageviews_data:
 			url = row["URL"]
 			irn = self.map_irn(url)
 
-			url_check = self.bucket.find_in_bucket(url, self.year, self.month)
+			crab = self.bucket.find_in_bucket(url)
 			
-			if url_check == False:
-				url_obj = UrlData(url=url, row_data=row, year=self.year, month=self.month, irn=irn)
-				self.bucket.put_in_bucket(url_obj)
+			if crab == False:
+				new_crab = UrlData(url=url, row_data=row, year=self.year, month=self.month, irn=irn)
+				self.bucket.put_in_bucket(new_crab)
 			else:
-				url_check.update_url(add_row=row)
+				leg = crab.find_leg(year=self.year, month=self.month)
+				if leg == False:
+					crab.add_month(row=row, year=self.year, month=self.month)
+				else:
+					leg.update_month(row=row)
 
 	def map_irn(self, url):
 		for i in self.irn_map:
@@ -125,104 +130,84 @@ class UrlBucket():
 		self.bucket.append(urlobject)
 		return True
 
-	def find_in_bucket(self, url, year, month):
+	def find_in_bucket(self, url):
 		for crab in self.bucket:
-			if url == crab.url and year == crab.year and month == crab.month:
+			if url == crab.url:
 				return crab
 		return False
 
 	def munch_bucket(self):
 		for crab in self.bucket:
-			crab.total_views()
-			crab.overall_average()
+			for leg in crab.month_list:
+				leg.total_views()
+				leg.overall_average()
 		return self.bucket
-'''
-class ViewMonthlyData():
-	def __init__(self, dataset=None):
-		self.dataset = dataset
-
-	def parse_dataset(self):
-		for url in self.dataset.keys():
-			self.data_for_url(url)
-
-	def data_for_url(self, url=None):
-		if url:
-			url_data = self.dataset[url]
-
-#			print(url_data)
-
-			title = url_data["Title"]
-			views = 0
-			times = 0
-
-			count = 1
-			available_average = False
-			for country in url_data["Countries"]:
-				if int(country["Views"]):
-					views += country["Views"]
-				try:
-					int(country["Average time"])
-					times += country["Average time"]
-					count += 1
-					available_average = True
-				except: pass
-
-			if available_average == True:
-				times = times/count
-			else:
-				times = "n/a"
-
-#			print(url, title, views, times)
-			return [url, title, views, times]
-
-	def print_month(self):
-		csv_filename = "july_collated.csv"
-		heading_row = ["url", "title", "views", "averageTime"]
-
-		write_file = open(csv_filename, 'w', newline='', encoding='utf-8')
-		writer = csv.writer(write_file, delimiter = ',')
-		writer.writerow(heading_row)
-
-		for url in self.dataset:
-			data_row = self.data_for_url(url)
-			writer.writerow(data_row)
-
-		write_file.close()
-'''
 
 class UrlData():
-	# Need to update this, possibly with a subclass that holds each month's data
 	def __init__(self, url=None, row_data=None, year=None, month=None, irn=None):
 		self.url = url
 		self.row_data = row_data
 		self.year = year
 		self.month = month
+		self.month_list = []
 		self.irn = irn
 		self.title = None
-		self.countries = []
 		self.views = 0
 		self.times = 0
 		self.count = 1
 
 		self.new_url()
 
-# Creates a brand new url object
+# Uses the initial row data to set the title and start the first month's processing
 	def new_url(self):
 		self.title = self.row_data["Title"]
 
-		country_row = self.update_countries()
+		self.add_month(row=self.row_data, year=self.year, month=self.month)
 
+	def add_month(self, row, year, month):
+		this_month = UrlDataMonth(url=self.url, row=row, year=year, month=month)
+
+		self.month_list.append(this_month)
+
+	def find_leg(self, year, month):
+		for leg in self.month_list:
+			if year == leg.year and month == leg.month:
+				return leg
+		return False
+
+	def crab_views():
+		pass
+
+	def crab_times():
+		pass
+
+class UrlDataMonth():
+	def __init__(self, url=None, row=None, year=None, month=None):
+		self.url = url
+		self.row = row
+		self.year = year
+		self.month = month
+		self.countries = []
+		self.count = 1
+		self.views = 0
+		self.times = 0
+
+		self.new_month()
+
+# Add the first row's data to the month
+	def new_month(self):
+		country_row = self.update_countries(row=self.row)
 		self.countries.append(country_row)
 
-# Updates an existing url object with new source data
-	def update_url(self, add_row=None):
+# Add a new row's data to an existing country, or if not available, to a new country
+	def update_month(self, row):
 		index = 0
 		written = False
-		add_country = add_row["Country"]
+		add_country = row["Country"]
 		for country in self.countries:
 			if add_country == country:
-				add_views = self.update_views(index=index, add_row=add_row)
-				add_times = self.update_times(index=index, add_row=add_row)
+				add_views = self.update_views(index=index, row=row)
+				add_times = self.update_times(index=index, row=row)
 				add_cCount = self.countries["add_country"]["cCount"]
 				add_cCount += 1
 				update_existing_country = {"Views": add_views, "Times": add_times, "cCount": add_cCount}
@@ -232,21 +217,16 @@ class UrlData():
 			index += 1
 
 		if written == False:
-			new_country = self.update_countries(add_row=add_row)
+			new_country = self.update_countries(row=row)
 			self.countries.append(new_country)
 
 		self.count += 1
 
-# Provides a new country dict on an existing url
-	def update_countries(self, add_row=None):
-		if add_row:
-			source = add_row
-		else:
-			source = self.row_data
-
-		country = source["Country"]
-		country_views = source["Views"]
-		country_times = source["Average time (s)"]
+# Provides a new country dict to the current month
+	def update_countries(self, row):
+		country = row["Country"]
+		country_views = row["Views"]
+		country_times = row["Average time (s)"]
 
 		try:
 			country_views = int(country_views)
@@ -264,19 +244,19 @@ class UrlData():
 		return country_row
 
 # Updates the total views for an existing country
-	def update_views(self, index=None, add_row=None):
+	def update_views(self, index=None, row=None):
 		views = self.countries[index]["Views"]
-		add_views = add_row["Views"]
+		add_views = row["Views"]
 		add_views = int(add_views)
 		add_views += views
 
 		return add_views
 
 # Updates the average time for an existing country
-	def update_times(self, index=None, add_row=None):
+	def update_times(self, index=None, row=None):
 		times = self.countries[index]["Times"]
 		cCount = self.countries[index]["cCount"]
-		add_times = add_row["Times"]
+		add_times = row["Times"]
 		try:
 			add_times = int(add_times)
 		except:
@@ -337,20 +317,24 @@ class DisplayCharts():
 		date_axis = []
 		view_axis = []
 		for crab in self.crabs:
-			print(crab.title)
 			crab_views = 0
-			crab_date = str(crab.year) + "_" + str(crab.month)
-			if crab_date in date_views:
-				crab_views = date_views[crab_date] + crab.views
-			else:
-				crab_views = crab.views
-			date_views.update({crab_date: crab_views})
-		for date in date_views.keys():
+			for leg in crab.month_list:
+				crab_year = str(leg.year)
+				crab_month = str(leg.month)
+				if len(crab_month) == 1:
+					crab_month = "0{}".format(crab_month)
+				crab_date = crab_year + "_" + crab_month
+				if crab_date in date_views:
+					crab_views = date_views[crab_date] + leg.views
+				else:
+					crab_views = leg.views
+				date_views.update({crab_date: crab_views})
+		for date in sorted(date_views.keys()):
 			date_axis.append(date)
 			view_axis.append(date_views[date])
 		pos = list(range(12))
 		print(date_views)
-#		self.bar_chart(view_axis, date_axis, pos)
+		self.bar_chart(view_axis, date_axis, pos)
 
 	def bar_chart(self, numbers, labels, pos):
 		plt.bar(pos, numbers, color="blue")
@@ -376,3 +360,57 @@ year_data.year_of_data()
 display_year = DisplayCharts(year_data.bucket)
 
 display_year.display_year()
+
+'''
+class ViewMonthlyData():
+	def __init__(self, dataset=None):
+		self.dataset = dataset
+
+	def parse_dataset(self):
+		for url in self.dataset.keys():
+			self.data_for_url(url)
+
+	def data_for_url(self, url=None):
+		if url:
+			url_data = self.dataset[url]
+
+#			print(url_data)
+
+			title = url_data["Title"]
+			views = 0
+			times = 0
+
+			count = 1
+			available_average = False
+			for country in url_data["Countries"]:
+				if int(country["Views"]):
+					views += country["Views"]
+				try:
+					int(country["Average time"])
+					times += country["Average time"]
+					count += 1
+					available_average = True
+				except: pass
+
+			if available_average == True:
+				times = times/count
+			else:
+				times = "n/a"
+
+#			print(url, title, views, times)
+			return [url, title, views, times]
+
+	def print_month(self):
+		csv_filename = "july_collated.csv"
+		heading_row = ["url", "title", "views", "averageTime"]
+
+		write_file = open(csv_filename, 'w', newline='', encoding='utf-8')
+		writer = csv.writer(write_file, delimiter = ',')
+		writer.writerow(heading_row)
+
+		for url in self.dataset:
+			data_row = self.data_for_url(url)
+			writer.writerow(data_row)
+
+		write_file.close()
+'''
