@@ -3,6 +3,8 @@
 import os
 import csv
 import matplotlib.pyplot as plt
+import json
+import random
 
 view_dir = "files/viewers"
 page_dir = "files/page_views"
@@ -10,11 +12,16 @@ page_dir = "files/page_views"
 viewers = "files/viewers/viewers_2022-06.csv"
 pageviews = "files/page_views/page_views_2022-06.csv"
 
+with open("codeDict.json") as f:
+	codesDict = json.load(f)
+
 class AnnualData():
-	def __init__(self, start_year=None, start_month=None, irn_map=None):
+	def __init__(self, start_year=None, start_month=None, irn_map=None, p_query=False, v_query=False):
 		self.start_year = start_year
 		self.start_month = start_month
 		self.irn_map = irn_map
+		self.p_query = p_query
+		self.v_query = v_query
 		self.p_files = os.listdir(page_dir)
 		self.v_files = os.listdir(view_dir)
 		self.loaded_files = 0
@@ -25,7 +32,7 @@ class AnnualData():
 		year = int(self.start_year)
 		month = int(self.start_month)
 
-		while self.loaded_files < 12:
+		while self.loaded_files < 1:
 			if month == 13:
 				month = 1
 				year += 1
@@ -44,10 +51,18 @@ class AnnualData():
 		if len(s_month) == 1:
 			s_month = "0{}".format(s_month)
 		file_suffix = "{year}-{month}.csv".format(year=s_year, month=s_month)
-		for file in self.p_files:
-			if file.endswith(file_suffix):
-				load_up = MonthlyData(year, month, self.irn_map, bucket=self.bucket)
-				load_up.combine_pageviews()
+		if self.p_query == True:
+			for file in self.p_files:
+				if file.endswith(file_suffix):
+					load_up = MonthlyData(year, month, self.irn_map, bucket=self.bucket)
+					load_up.combine_pageviews()
+		elif self.v_query == True:
+			for file in self.v_files:
+				if file.endswith(file_suffix):
+					load_up = MonthlyData(year, month, bucket=self.bucket)
+					load_up.combine_viewers()
+		else:
+			print("No query?")
 			
 class MonthlyData():
 	def __init__(self, year=None, month=None, irn_map=None, bucket=None):
@@ -64,7 +79,11 @@ class MonthlyData():
 			self.bucket = DataBucket()
 
 	def open_viewers(self):
-		viewers = view_dir + "/viewers_" + year + "-" + month + ".csv"
+		s_year = str(self.year)
+		s_month = str(self.month)
+		if len(s_month) == 1:
+			s_month = "0{}".format(s_month)
+		viewers = view_dir + "/viewers_" + s_year + "-" + s_month + ".csv"
 		with open(viewers, newline='') as viewers_source:
 			view_reader = csv.DictReader(viewers_source, delimiter=",")
 			for row in view_reader:
@@ -98,17 +117,7 @@ class MonthlyData():
 				if leg == False:
 					crab.add_month(row=row, year=self.year, month=self.month)
 				else:
-					leg.update_month(row=row)
-
-			views = int(row["Daily viewers sum"])
-			if country not in viewers_dict:
-				viewers_dict.update({country: {"Views": views}})
-			else:
-				add_views = viewers_dict[country]["Views"]
-				add_views = int(add_views)
-				add_views += views
-				viewers_dict[country].update({"Views": add_views})
-		return viewers_dict
+					leg.viewer_count_update(row=row)
 
 	def combine_pageviews(self):
 		self.open_pageviews()
@@ -157,7 +166,10 @@ class DataBucket():
 			if query_type == "pageviews":
 				for leg in crab.month_list:
 					leg.total_views()
+					crab.views += leg.views
 					leg.overall_average()
+					crab.times += leg.times
+				crab.times = crab.times/len(crab.month_list)
 		return self.bucket
 
 class DataCrab():
@@ -170,6 +182,8 @@ class DataCrab():
 		self.month_list = []
 		self.irn = irn
 		self.country_code = country_code
+		self.crab_type = None
+		self.country_name = None
 		self.title = None
 		self.views = 0
 		self.times = 0
@@ -179,12 +193,16 @@ class DataCrab():
 			self.crab_type = "pageviews"
 		if self.country_code:
 			self.crab_type = "viewers"
+			for code in codesDict:
+				if self.country_code == code["Code"]:
+					self.country_name = code["Name"]
 
-		self.new_url()
+		self.new_crab()
 
 # Uses the initial row data to set the title and start the first month's processing
-	def new_url(self):
-		self.title = self.row_data["Title"]
+	def new_crab(self):
+		if "Title" in self.row_data:
+			self.title = self.row_data["Title"]
 
 		self.add_month(row=self.row_data, year=self.year, month=self.month)
 
@@ -213,12 +231,24 @@ class DataCrabMonth():
 		if self.crab_type == "pageviews":
 			self.new_month()
 		if self.crab_type == "viewers":
-			self.count += row["Daily viewers sum"]
+			try:
+				monthly_viewers = int(row["Daily viewers sum"])
+			except:
+				monthly_viewers = 0
+			self.views += monthly_viewers
 
 # Add the first row's data to the month
 	def new_month(self):
 		country_row = self.update_countries(row=self.row)
 		self.countries.append(country_row)
+
+	def viewer_count_update(self, row):
+		try:
+			monthly_viewers = int(row["Daily viewers sum"])
+		except:
+			monthly_viewers = 0
+		self.views += monthly_viewers
+		self.count += 1
 
 # Add a new row's data to an existing country, or if not available, to a new country
 	def update_month(self, row):
@@ -316,9 +346,11 @@ class DataCrabMonth():
 			try:
 				time = int(time)
 				summed_times += time
-			except: pass
+			except:
+				country_count -= 1
 
-		self.times = summed_times/country_count
+		if country_count >= 1:
+			self.times = summed_times/country_count
 
 
 class DisplayCharts():
@@ -331,13 +363,23 @@ class DisplayCharts():
 		loop = 0
 		while loop < cutoff:
 			this_crab = sorted_crabs[loop]
-			print(this_crab.month, this_crab.year, this_crab.title, this_crab.views, this_crab.times)
+			print(this_crab.title + " (IRN " + str(this_crab.irn) +  "): " + str(this_crab.views))
+			print(this_crab.times)
+			loop += 1
+
+	def top_times(self, cutoff):
+		sorted_crabs = sorted(self.crabs, key=lambda x: x.times, reverse=True)
+		loop = 0
+		while loop < cutoff:
+			this_crab = sorted_crabs[loop]
+			print(this_crab.times)
 			loop += 1
 
 	def display_year(self):
 		date_views = {}
 		date_axis = []
 		view_axis = []
+		year_views = 0
 		title = "All views on Google Art by month"
 		for crab in self.crabs:
 			crab_views = 0
@@ -356,8 +398,10 @@ class DisplayCharts():
 		for date in sorted(date_views.keys()):
 			date_axis.append(date)
 			view_axis.append(date_views[date])
+			year_views += date_views[date]
 		pos = list(range(12))
 		print(date_views)
+		print("Total views for the year: {}".format(year_views))
 		self.bar_chart(view_axis, date_axis, pos, title)
 
 	def bar_chart(self, numbers, labels, pos, title):
@@ -367,15 +411,26 @@ class DisplayCharts():
 		plt.show()
 
 	def line_chart(self, numbers, labels, title):
-		countries = []
+		countries = {}
 		for date in numbers.keys():
-			countries.append(key in numbers[date].keys())
-		for country in countries:
+			for n in numbers[date]:
+				if n["Code"] not in countries.keys():
+					countries.update({n["Code"]: n["Name"]})
+
+		#for country in countries:
+		for i in range(0,5):
+			country_code, legend_label = random.choice(list(countries.items()))
 			y_axis = []
 			for date in sorted(numbers.keys()):
-				country_views = numbers[date][country]
+				for n in numbers[date]:
+					if country_code == n["Code"]:
+						country_views = n["Views"]
+					else:
+						country_views = 0
 				y_axis.append(country_views)
-				plt.plot(labels, y_axis, label=country)
+				#print(y_axis)
+			
+			plt.plot(labels, y_axis, label=legend_label)
 
 		plt.title(title)
 		plt.legend()
@@ -407,14 +462,13 @@ class DisplayCharts():
 		self.bar_chart(view_axis, date_axis, pos, title)
 
 	def country_counts(self):
-		# To do: make this work
 		title = "Views by country across 2021/2022"
 		date_container = {}
 		date_axis = []
 		for crab in self.crabs:
-			crab_views = 0
 			if crab.crab_type == "viewers":
 				crab_code = crab.country_code
+				crab_name = crab.country_name
 				for leg in crab.month_list:
 					crab_year = str(leg.year)
 					crab_month = str(leg.month)
@@ -422,39 +476,48 @@ class DisplayCharts():
 						crab_month = "0{}".format(crab_month)
 					crab_date = crab_year + "_" + crab_month
 					if crab_date in date_container:
-						if crab_code in date_container[crab_date]:
-							crab_views = date_container[crab_date][crab_code] + leg.views
-						else: crab_views = leg.views
+						written = False
+						for i in date_container[crab_date]:
+							if i["Code"] == crab_code:
+								crab_views = i["Views"] + leg.views
+								i.update({"Views": crab_views})
+								written = True
+						if written == False:
+							crab_views = leg.views
+							date_container[crab_date].append({"Code": crab_code, "Name": crab_name, "Views": crab_views})
 					else:
 						crab_views = leg.views
-					date_container.update({crab_date: {crab_code: crab_views}})
-			for date in sorted(date_container.keys()):
-				date_axis.append(date)
+						date_container.update({crab_date: [{"Code": crab_code, "Name": crab_name, "Views": crab_views}]})
+		for date in sorted(date_container.keys()):
+			date_axis.append(date)
 		pos = list(range(12))
-		print(date_axis)
+#		print(date_axis)
+#		print(date_container)
 		self.line_chart(date_container, date_axis, title)
 
 def attach_irns():
 	irn_map = []
-	with open("Data.csv", newline="") as f:
+	with open("files/misc/irnmap.csv", newline="") as f:
 		f_reader = csv.DictReader(f, delimiter=",")
 		for row in f_reader:
 			irn_map.append(row)
 	return irn_map
 
-year = "2021"
-month = "07"
+year = "2022"
+month = "06"
 
 irn_map = attach_irns()
 
-year_data = AnnualData(start_year=year, start_month=month, irn_map=irn_map)
+year_data = AnnualData(start_year=year, start_month=month, irn_map=irn_map, p_query=True, v_query=False)
 year_data.year_of_data()
 
 display_year = DisplayCharts(year_data.bucket)
 
 #display_year.display_year()
-#display_year.url_over_time("https://artsandculture.google.com/asset/9AHdocbIYZza7A")
-display_year.country_counts()
+display_year.top_views(cutoff=25)
+#display_year.top_times(cutoff=25)
+#display_year.url_over_time("https://artsandculture.google.com/asset/6wGOgr80rilwYw")
+#display_year.country_counts()
 
 '''
 class ViewMonthlyData():
