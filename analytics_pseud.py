@@ -2,16 +2,11 @@
 
 import os
 import csv
+import math
 import matplotlib.pyplot as plt
 import json
 import random
 import re
-from tinydb import TinyDB, Query, where
-from tinydb.operations import set
-from tinydb.table import Document
-
-db = TinyDB("analyticsdb.json")
-Scoop = Query()
 
 files_dir = "files/"
 pageview_dir = files_dir + "page_views"
@@ -87,7 +82,7 @@ class MultiMonth():
 		
 		source_file = folder + "/" + file_prefix + file_suffix
 		
-		with open(source_file, newline="") as source:
+		with open(source_file, newline="", encoding="utf-8") as source:
 			reader = csv.DictReader(source, delimiter=",")
 			for row in reader:
 				source_data.append(row)
@@ -109,7 +104,7 @@ class MultiMonth():
 				crab = self.bucket.find_crab(country_code=country_code)
 
 			elif source_type == "co":
-				print(row)
+#				print(row)
 				if "Page" in row:
 					url_slug = row["Page"].split("/")
 					irn = url_slug[2]
@@ -463,36 +458,194 @@ class Report():
 		self.start_month = start_month
 		self.q_len = q_len
 
-		months = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
+		self.months = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
 
 		self.s_start_year = str(self.start_year)
-		self.s_start_month = months[self.start_month]
+		self.s_start_month = self.months[self.start_month]
 
-		if self.start_month + self.q_len > 12:
-			self.end_year = self.start_year + 1
-			self.end_month = self.start_month + self.q_len - 12
+		# Messy because the q_len is inclusive of first and last
+		if self.q_len > 1:
+			if self.start_month + self.q_len > 12:
+				self.end_year = self.start_year + 1
+				self.end_month = self.start_month + self.q_len - 13
+			else:
+				self.end_year = self.start_year
+				self.end_month = self.start_month + self.q_len - 1
 		else:
 			self.end_year = self.start_year
-			self.end_month = self.start_month + self.q_len
+			self.end_month = self.start_month
 
 		self.s_end_year = str(self.end_year)
-		self.s_end_month = months[self.end_month]
+		self.s_end_month = self.months[self.end_month]
+
+		self.report_file = "{s_s_m} {s_s_y} - {s_e_m} {s_e_y} Google Arts analytics report.csv".format(s_s_m=self.s_start_month, s_s_y=self.s_start_year, s_e_m=self.s_end_month, s_e_y=self.s_end_year)
+
+		self.open_file = open(self.report_file, "w", newline="", encoding="utf-8")
 
 	def write_report(self):
+		self.reportwriter = csv.writer(self.open_file, delimiter=",")
+
 		if self.q_len > 1:
-			print("Data from {s_month} {s_year} to {e_month} {e_year}".format(s_month=self.s_start_month, s_year=self.s_start_year, e_month=self.s_end_month, e_year=self.s_end_year))
+			self.reportwriter.writerow(["Data from {s_month} {s_year} to {e_month} {e_year}".format(s_month=self.s_start_month, s_year=self.s_start_year, e_month=self.s_end_month, e_year=self.s_end_year)])
 		else:
-			print("Data for {s_month} {s_year}".format(s_month=self.s_start_month, s_year=self.s_start_year))
+			self.reportwriter.writerow(["Data for {s_month} {s_year}".format(s_month=self.s_start_month, s_year=self.s_start_year)])
 		
-		print("Total page views")
-		totals = self.total_views("page")
-		print(totals)
+		self.see_totals()
+		self.see_top(20, "page")
 
-		print("Top viewed pages on Google Art")
-		self.top_views(cutoff=25, mode="page")
+#		print("Top viewed pages on Google Art")
+#		self.top_views(cutoff=20, mode="page")
 
-		print("Top countries using Google Art")
-		self.top_views(cutoff=25, mode="view")
+#		print("Top countries using Google Art")
+#		self.top_views(cutoff=20, mode="view")
+
+	def see_totals(self):
+		self.reportwriter.writerow(["Month", "Google pageviews", "CO pageviews", "Difference"])
+
+		total = 0
+		co_total = 0
+		loop = 0
+		check_year = self.start_year
+		check_month = self.start_month
+		while loop < self.q_len:
+			monthly_totals = self.monthly_pageview_total(check_year, check_month, "page")
+			
+			month_value = "{y} {m}".format(y=str(check_year), m=str(check_month))
+
+			g_value = monthly_totals[0]
+			c_value = monthly_totals[1]
+
+			if c_value > 0:
+				difference = "{}%".format(math.ceil(g_value / c_value * 100))
+			else:
+				difference = "n/a"
+
+			self.reportwriter.writerow([month_value, g_value, c_value, difference])
+			print([month_value, g_value, c_value, difference])
+
+			total += g_value
+			co_total += c_value
+
+			if check_month == 12:
+				check_month = 1
+				check_year += 1
+			else:
+				check_month += 1
+			loop += 1
+		
+		if co_total > 0:
+			total_difference = "{}%".format(math.ceil(total / co_total * 100))
+		else:
+			total_difference = "n/a"
+
+		self.reportwriter.writerow(["Total", total, co_total, total_difference])
+
+	def monthly_pageview_total(self, year, month, mode):
+		total_by_month = 0
+		co_total_by_month = 0
+		for crab in self.crabs:
+			if crab.crab_type == mode:
+				for leg in crab.legs:
+					if leg.year == year and leg.month == month:
+						total_by_month += leg.total_views
+						co_total_by_month += leg.co_views
+		return (total_by_month, co_total_by_month)
+
+	def see_top(self, cutoff, mode):
+		self.reportwriter.writerow([""])
+
+		header_row = ["irn", "title"]
+
+		for i in range(0, self.q_len-1):
+			if self.start_month + i > 12:
+				column_y = str(self.start_year + 1)
+				column_m = self.months[self.start_month + i - 12]
+			else:
+				column_y = str(self.start_year)
+				column_m = self.months[self.start_month + i]
+
+			column_title = column_m + column_y
+			header_row.append(column_title + " Google")
+			header_row.append(column_title + " CO")
+
+		total_columns = ["Google total", "CO total", "Difference"]
+		for col in total_columns:
+			header_row.append(col)
+
+		self.reportwriter.writerow(header_row)
+
+#		return top x google pages for the whole span, broken down by google and co views month by month, summed
+		mode_crabs = []
+		for crab in self.crabs:
+			if crab.crab_type == mode:
+				mode_crabs.append(crab)
+		sorted_crabs = sorted(mode_crabs, key=lambda x: x.total_views, reverse=True)
+
+		top_crabs = []
+		loop = 0
+		while loop < cutoff:
+			top_crabs.append(sorted_crabs[loop])
+			loop +=1
+
+		if mode == "page":
+			for crab in top_crabs:
+				crab_total = 0
+				crab_co_total = 0
+				write_loop = 0
+				check_year = self.start_year
+				check_month = self.start_month
+
+				data_row = [crab.irn, crab.title]
+
+				while write_loop < self.q_len:
+					monthly_totals = self.top_by_month(crab, check_year, check_month)
+			
+					g_total = monthly_totals[0]
+					c_total = monthly_totals[1]
+
+					data_row.append(g_total)
+					data_row.append(c_total)
+
+					crab_total += g_total
+					crab_co_total += c_total
+
+					if check_month == 12:
+						check_month = 1
+						check_year += 1
+					else:
+						check_month += 1
+					write_loop += 1
+
+				data_row.append(crab_total)
+				data_row.append(crab_co_total)
+
+				if crab_co_total > 0:
+					total_difference = "{}%".format(math.ceil(crab_total / crab_co_total * 100))
+				else:
+					total_difference = "n/a"
+
+				data_row.append(total_difference)
+
+				self.reportwriter.writerow(data_row)
+
+		elif mode == "view":
+			pass
+#			loop = 0
+#			while loop < self.q_len:
+#				print(this_crab.country_name + " (" + this_crab.country_code + "): " + str(this_crab.total_views))
+#			loop += 1
+
+	def top_by_month(self, crab, year, month):
+		for leg in crab.legs:
+			if leg.year == year and leg.month == month:
+				return (leg.total_views, leg.co_views)
+			else:
+				pass
+
+	def chart_visitation(self):
+#		comparison of visitation by location, compare numbers/percentages each month across span, summed
+#		sort by most visits on google
+		pass
 
 	def get_goog_views(self):
 		pass
@@ -543,9 +696,9 @@ class Report():
 	def line_chart(self):
 		pass
 
-year = 2021
-month = 6
-q_len = 13
+year = 2022
+month = 7
+q_len = 1
 
 year_data = MultiMonth(start_year=year, start_month=month, q_len=q_len)
 year_data.select_source_files()
